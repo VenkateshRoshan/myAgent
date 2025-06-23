@@ -1,6 +1,7 @@
 """
 WhatsApp-style Streamlit UI for Personal AI Agent
-Features: User management, Conversation management, WhatsApp-style chat interface
+UPDATED VERSION: Full integration with FastAPI backend, database, and agent
+Works with: api.py, database.py, agent.py
 """
 
 import streamlit as st
@@ -20,7 +21,7 @@ st.set_page_config(
 )
 
 # API Configuration
-API_BASE_URL = "http://localhost:1432"  # Your FastAPI server
+API_BASE_URL = "http://localhost:1432"  # FastAPI server
 
 # Custom CSS for WhatsApp-style UI
 def load_css():
@@ -101,20 +102,9 @@ def load_css():
 
 # Initialize session state
 def initialize_session_state():
-    if 'users' not in st.session_state:
-        st.session_state.users = ['admin']
-    
+    """Initialize all session state variables for the app"""
     if 'current_user' not in st.session_state:
         st.session_state.current_user = None
-    
-    if 'conversations' not in st.session_state:
-        st.session_state.conversations = {}  # {user: [conversation_ids]}
-    
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = {}  # {conversation_id: messages}
-    
-    if 'conversation_titles' not in st.session_state:
-        st.session_state.conversation_titles = {}  # {conversation_id: title}
     
     if 'current_conversation' not in st.session_state:
         st.session_state.current_conversation = None
@@ -122,60 +112,144 @@ def initialize_session_state():
     if 'page' not in st.session_state:
         st.session_state.page = 'home'  # home, conversations, chat
 
-# API functions
-def send_message_to_agent(message: str, conversation_id: str, user_id: str) -> Dict[str, Any]:
-    """Send message to the AI agent via API"""
+# ===========================================
+# API INTEGRATION FUNCTIONS
+# ===========================================
+
+def check_agent_health() -> bool:
+    """Check if the FastAPI server and agent are running"""
+    try:
+        response = requests.get(f"{API_BASE_URL}/api/health/", timeout=5)
+        return response.status_code == 200
+    except Exception as e:
+        st.error(f"API connection error: {e}")
+        return False
+
+def create_user_via_api(username: str) -> Dict[str, Any]:
+    """Create a new user through the API"""
     try:
         response = requests.post(
-            f"{API_BASE_URL}/api/chat",
+            f"{API_BASE_URL}/api/db/create_user",
+            json={"username": username, "email": None},
+            timeout=10
+        )
+        if response.status_code == 200:
+            return {"success": True, "data": response.json()}
+        else:
+            return {"success": False, "error": f"API error: {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def get_users_from_api() -> List[Dict[str, Any]]:
+    """Fetch all users from the database via API"""
+    try:
+        response = requests.get(f"{API_BASE_URL}/api/db/users", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("users", [])
+        else:
+            st.error(f"Failed to fetch users: {response.status_code}")
+            return []
+    except Exception as e:
+        st.error(f"Error fetching users: {e}")
+        return []
+
+def get_user_conversations_from_api(user_id: str) -> List[Dict[str, Any]]:
+    """Fetch user's conversations from the database via API"""
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/api/users/user_id={user_id}/convs",
+            timeout=10
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"Failed to fetch conversations: {response.status_code}")
+            return []
+    except Exception as e:
+        st.error(f"Error fetching conversations: {e}")
+        return []
+
+def create_conversation_via_api(user_id: str) -> Dict[str, Any]:
+    """Create a new conversation through the API"""
+    try:
+        response = requests.post(
+            f"{API_BASE_URL}/api/users/user_id={user_id}/convs/add/",
+            timeout=10
+        )
+        if response.status_code == 200:
+            return {"success": True, "data": response.json()}
+        else:
+            return {"success": False, "error": f"API error: {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def get_conversation_messages_from_api(user_id: str, conv_id: str) -> List[Dict[str, Any]]:
+    """Fetch conversation messages from the database via API"""
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/api/users/user_id={user_id}/convs/conv_id={conv_id}/",
+            timeout=10
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"Failed to fetch messages: {response.status_code}")
+            return []
+    except Exception as e:
+        st.error(f"Error fetching messages: {e}")
+        return []
+
+def send_message_to_agent_via_api(user_id: str, conv_id: str, message: str) -> Dict[str, Any]:
+    """Send message to AI agent through the proper API endpoint"""
+    try:
+        response = requests.post(
+            f"{API_BASE_URL}/api/users/user_id={user_id}/convs/conv_id={conv_id}/chat",
             json={
                 "query": message,
-                "conversation_id": conversation_id,
-                "user_id": user_id
+                "user_id": user_id,
+                "conversation_id": conv_id
             },
             timeout=30
         )
         
         if response.status_code == 200:
-            return response.json()
+            return {
+                "success": True,
+                "data": response.json()
+            }
         else:
             return {
-                "answer": f"Error: API returned status {response.status_code}",
-                "used_search": False,
-                "success": False
+                "success": False,
+                "error": f"API returned status {response.status_code}: {response.text}"
             }
     
     except requests.exceptions.RequestException as e:
         return {
-            "answer": f"Error connecting to agent: {str(e)}",
-            "used_search": False,
-            "success": False
+            "success": False,
+            "error": f"Connection error: {str(e)}"
         }
 
-def check_agent_health() -> bool:
-    """Check if the AI agent is running"""
+def delete_conversation_via_api(user_id: str, conv_id: str) -> Dict[str, Any]:
+    """Delete a conversation through the API"""
     try:
-        response = requests.get(f"{API_BASE_URL}/api/health", timeout=5)
-        return response.status_code == 200
-    except:
-        return False
+        response = requests.delete(
+            f"{API_BASE_URL}/api/users/user_id={user_id}/convs/delete/conv_id={conv_id}/",
+            timeout=10
+        )
+        if response.status_code == 200:
+            return {"success": True, "data": response.json()}
+        else:
+            return {"success": False, "error": f"API error: {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
-def create_new_conversation(user: str) -> str:
-    """Create a new conversation for a user"""
-    conversation_id = str(uuid.uuid4())[:8]  # Short ID
-    
-    if user not in st.session_state.conversations:
-        st.session_state.conversations[user] = []
-    
-    st.session_state.conversations[user].append(conversation_id)
-    st.session_state.chat_history[conversation_id] = []
-    st.session_state.conversation_titles[conversation_id] = "New Conversation"
-    
-    return conversation_id
+# ===========================================
+# UI COMPONENTS
+# ===========================================
 
-# UI Components
 def render_user_list():
-    """Render the home page with user list"""
+    """Render the home page with user list from database"""
     st.markdown('<div class="chat-header">🤖 Personal AI Agent</div>', unsafe_allow_html=True)
     
     # Check agent status
@@ -184,16 +258,26 @@ def render_user_list():
         st.success("🟢 Agent is online and ready!")
     else:
         st.error("🔴 Agent is offline. Please start your FastAPI server.")
-        st.info("Run: `python backend/main.py`")
+        st.info("Run: `python api.py`")
+        return  # Don't show users if API is down
     
     st.markdown("### 👥 Select a user:")
     
-    # Display users
-    for user in st.session_state.users:
-        if st.button(f"💬 {user.title()}", key=f"user_{user}", use_container_width=True):
-            st.session_state.current_user = user
-            st.session_state.page = 'conversations'
-            st.rerun()
+    # Fetch users from database via API
+    users = get_users_from_api()
+    
+    if users:
+        # Display existing users
+        for user in users:
+            user_id = user.get('user_id', 'unknown')
+            username = user.get('username', 'Unknown User')
+            
+            if st.button(f"💬 {username}", key=f"user_{user_id}", use_container_width=True):
+                st.session_state.current_user = user_id
+                st.session_state.page = 'conversations'
+                st.rerun()
+    else:
+        st.info("No users found in database. Create a new user below.")
     
     # Add user section
     st.markdown("---")
@@ -204,18 +288,20 @@ def render_user_list():
         new_user = st.text_input("Enter username:", placeholder="e.g., john_doe")
     with col2:
         if st.button("➕ Add", use_container_width=True):
-            if new_user and new_user not in st.session_state.users:
-                st.session_state.users.append(new_user.lower())
-                st.success(f"User '{new_user}' added!")
-                st.rerun()
-            elif new_user in st.session_state.users:
-                st.warning("User already exists!")
+            if new_user:
+                # Create user via API
+                result = create_user_via_api(new_user.lower())
+                if result["success"]:
+                    st.success(f"User '{new_user}' created successfully!")
+                    st.rerun()
+                else:
+                    st.error(f"Failed to create user: {result['error']}")
             else:
                 st.warning("Please enter a username!")
 
 def render_conversations_list():
-    """Render conversations list for the selected user"""
-    user = st.session_state.current_user
+    """Render conversations list for the selected user from database"""
+    user_id = st.session_state.current_user
     
     # Header with back button
     col1, col2 = st.columns([1, 10])
@@ -225,22 +311,23 @@ def render_conversations_list():
             st.rerun()
     
     with col2:
-        st.markdown(f'<div class="chat-header">💬 Conversations - {user.title()}</div>', 
+        st.markdown(f'<div class="chat-header">💬 Conversations - {user_id}</div>', 
                    unsafe_allow_html=True)
     
-    # Get user conversations
-    user_conversations = st.session_state.conversations.get(user, [])
+    # Fetch conversations from database via API
+    conversations = get_user_conversations_from_api(user_id)
     
-    if user_conversations:
+    if conversations:
         st.markdown("### 📝 Your Conversations:")
         
-        for conv_id in user_conversations:
-            title = st.session_state.conversation_titles.get(conv_id, "Untitled")
-            messages_count = len(st.session_state.chat_history.get(conv_id, []))
+        for conv in conversations:
+            conv_id = conv['conversation_id']
+            title = conv.get('title', 'Untitled')
+            message_count = conv.get('message_count', 0)
             
             col1, col2 = st.columns([4, 1])
             with col1:
-                if st.button(f"💬 {title} ({messages_count} messages)", 
+                if st.button(f"💬 {title} ({message_count} messages)", 
                            key=f"conv_{conv_id}", use_container_width=True):
                     st.session_state.current_conversation = conv_id
                     st.session_state.page = 'chat'
@@ -248,31 +335,32 @@ def render_conversations_list():
             
             with col2:
                 if st.button("🗑️", key=f"del_{conv_id}", help="Delete conversation"):
-                    st.session_state.conversations[user].remove(conv_id)
-                    if conv_id in st.session_state.chat_history:
-                        del st.session_state.chat_history[conv_id]
-                    if conv_id in st.session_state.conversation_titles:
-                        del st.session_state.conversation_titles[conv_id]
-                    st.rerun()
+                    # Delete conversation via API
+                    result = delete_conversation_via_api(user_id, conv_id)
+                    if result["success"]:
+                        st.success(f"Conversation deleted!")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to delete: {result['error']}")
     else:
         st.info("No conversations yet. Create a new one!")
     
     # Create new conversation button
     st.markdown("---")
     if st.button("➕ New Conversation", use_container_width=True, type="primary"):
-        conversation_id = create_new_conversation(user)
-        st.session_state.current_conversation = conversation_id
-        st.session_state.page = 'chat'
-        st.rerun()
-
-def get_dynamic_height():
-    """Calculate dynamic height based on screen size"""
-    # Use JavaScript to get window height and calculate appropriate container height
-    return min(max(400, int(st.session_state.get('window_height', 800) * 0.6)), 600)
+        # Create conversation via API
+        result = create_conversation_via_api(user_id)
+        if result["success"]:
+            new_conv_id = result["data"]["conversation_id"]
+            st.session_state.current_conversation = new_conv_id
+            st.session_state.page = 'chat'
+            st.rerun()
+        else:
+            st.error(f"Failed to create conversation: {result['error']}")
 
 def render_chat_interface():
-    """Render WhatsApp-style chat interface with RESPONSIVE FIXED input"""
-    user = st.session_state.current_user
+    """Render WhatsApp-style chat interface with database integration"""
+    user_id = st.session_state.current_user
     conv_id = st.session_state.current_conversation
     
     # Header with back button
@@ -283,33 +371,34 @@ def render_chat_interface():
             st.rerun()
     
     with col2:
-        conv_title = st.session_state.conversation_titles.get(conv_id, "Chat")
-        st.markdown(f'<div class="chat-header">🤖 {conv_title} - {user.title()}</div>', 
+        st.markdown(f'<div class="chat-header">🤖 Chat - {user_id}</div>', 
                    unsafe_allow_html=True)
     
-    # Dynamic height calculation - responsive to window size
-    container_height = get_dynamic_height()
-    
     # Messages container with dynamic height
+    container_height = 400
+    
     with st.container(height=container_height):
-        messages = st.session_state.chat_history.get(conv_id, [])
+        # Fetch messages from database via API
+        messages = get_conversation_messages_from_api(user_id, conv_id)
         
         if messages:
             for message in messages:
-                if message['type'] == 'user':
+                current_time = datetime.now().strftime("%H:%M")
+                
+                if message['role'] == 'user':
                     st.markdown(f"""
                     <div class="user-message">
                         {message['content']}
-                        <div class="message-time">{message['time']}</div>
+                        <div class="message-time">{current_time}</div>
                     </div>
                     <div class="clearfix"></div>
                     """, unsafe_allow_html=True)
                 
-                elif message['type'] == 'agent':
+                elif message['role'] == 'agent':
                     st.markdown(f"""
                     <div class="agent-message">
                         {message['content']}
-                        <div class="message-time">{message['time']}</div>
+                        <div class="message-time">{current_time}</div>
                     </div>
                     <div class="clearfix"></div>
                     """, unsafe_allow_html=True)
@@ -320,7 +409,7 @@ def render_chat_interface():
             </div>
             """, unsafe_allow_html=True)
     
-    # FIXED INPUT - This stays at bottom, outside the scrollable container
+    # Fixed input section
     st.markdown("---")
     
     # Input form
@@ -340,42 +429,26 @@ def render_chat_interface():
     
     # Handle message sending
     if send_button and user_message.strip():
-        current_time = datetime.now().strftime("%H:%M")
-        
-        # Add user message
-        if conv_id not in st.session_state.chat_history:
-            st.session_state.chat_history[conv_id] = []
-        
-        st.session_state.chat_history[conv_id].append({
-            'type': 'user',
-            'content': user_message.strip(),
-            'time': current_time
-        })
-        
-        # Update conversation title if it's the first message
-        if st.session_state.conversation_titles[conv_id] == "New Conversation":
-            title = user_message.strip()[:30] + "..." if len(user_message) > 30 else user_message.strip()
-            st.session_state.conversation_titles[conv_id] = title
-        
-        # Send to agent and get response
+        # Send message to agent via API
         with st.spinner("🤖 AI is thinking..."):
-            response = send_message_to_agent(user_message.strip(), conv_id, user)
+            result = send_message_to_agent_via_api(user_id, conv_id, user_message.strip())
             
-            st.session_state.chat_history[conv_id].append({
-                'type': 'agent',
-                'content': response['answer'],
-                'time': current_time,
-                'used_search': response.get('used_search', False)
-            })
-        
-        st.rerun()
+            if result["success"]:
+                st.success("Message sent!")
+                st.rerun()
+            else:
+                st.error(f"Failed to send message: {result['error']}")
 
-# Main app
+# ===========================================
+# MAIN APP
+# ===========================================
+
 def main():
+    """Main application function"""
     load_css()
     initialize_session_state()
     
-    # Page routing
+    # Page routing based on session state
     if st.session_state.page == 'home':
         render_user_list()
     elif st.session_state.page == 'conversations':
